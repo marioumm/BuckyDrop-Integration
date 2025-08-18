@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-unsafe-return */
 // src/checkout/checkout.controller.ts
 import {
   Controller,

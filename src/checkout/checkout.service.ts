@@ -1,16 +1,22 @@
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
+/* eslint-disable @typescript-eslint/no-unsafe-argument */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
 // src/checkout/checkout.service.ts
 import { Injectable, HttpException, HttpStatus, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { RpcException } from '@nestjs/microservices';
 import Stripe from 'stripe';
+import axios from 'axios';
 import {
   CompleteCheckoutDto,
   ItemDto,
-  CustomerDataDto,
+  // CustomerDataDto,
   PaymentDataDto,
 } from './dto/checkout.dto';
 import { WooCommerceHttpService } from 'src/shared/woocommerce-http.service';
-import { BadRequestError } from 'openai';
+// import { BadRequestError } from 'openai';
 
 interface Billing {
   email?: string;
@@ -198,20 +204,20 @@ export class CheckoutService {
       // Prepare shipping lines if shipping option is provided
       const shippingLines =
         checkoutData.customer_data?.shipping_option !== undefined &&
-        checkoutData.customer_data.shipping_option !== null
+          checkoutData.customer_data.shipping_option !== null
           ? [
-              {
-                method_id:
-                  checkoutData.customer_data.shipping_option.method_id ||
-                  'flat_rate',
-                method_title:
-                  checkoutData.customer_data.shipping_option.method_title ||
-                  'Shipping',
-                total:
-                  checkoutData.customer_data.shipping_option.cost?.toString() ||
-                  '0.00',
-              },
-            ]
+            {
+              method_id:
+                checkoutData.customer_data.shipping_option.method_id ||
+                'flat_rate',
+              method_title:
+                checkoutData.customer_data.shipping_option.method_title ||
+                'Shipping',
+              total:
+                checkoutData.customer_data.shipping_option.cost?.toString() ||
+                '0.00',
+            },
+          ]
           : [];
 
       const orderPayload: any = {
@@ -302,7 +308,7 @@ export class CheckoutService {
 
   private shouldSetOrderAsPaid(paymentMethod: string): boolean {
     // Set as paid for payment methods that are processed immediately
-    const immediatePaymentMethods = ['stripe', 'paypal'];
+    const immediatePaymentMethods = ['stripe', 'paypal' , 'skipcash'];
     return immediatePaymentMethods.includes(paymentMethod);
   }
 
@@ -370,6 +376,9 @@ export class CheckoutService {
 
         case 'paypal':
           return await this.processPayPalPayment(order, paymentData);
+
+        case 'skipcash':
+          return await this.processSkipCashPayment(order, paymentData);
 
         case 'bacs':
           return await this.processBankTransfer(order);
@@ -534,6 +543,118 @@ export class CheckoutService {
     return { status: 'on-hold' };
   }
 
+  private async processSkipCashPayment(
+    order: WooCommerceOrder,
+    paymentData: PaymentDataDto[],
+  ): Promise<{ status: string; transaction_id?: string; payment_url?: string }> {
+    try {
+      this.logger.log(`Processing SkipCash payment for order ${order.id}`);
+
+      const skipCashToken = paymentData.find(
+        (data) =>
+          data.key === 'skipcash_token' ||
+          data.key === 'skipcash_payment_method' ||
+          data.key === 'payment_method_id',
+      )?.value;
+
+      if (!skipCashToken) {
+        throw new RpcException({
+          statusCode: 400,
+          message: 'SkipCash payment token not provided',
+        });
+      }
+
+      if (!process.env.SKIPCASH_API_KEY || !process.env.SKIPCASH_BASE_URL) {
+        this.logger.error('SkipCash API key or base URL is not configured.');
+        return { status: 'failed' };
+      }
+
+      const amountInCents = Math.round(Number(order.total) * 100);
+      if (Number.isNaN(amountInCents) || amountInCents <= 0) {
+        this.logger.error(
+          `Invalid order amount for order ${order.id}: ${order.total}`,
+        );
+        return { status: 'failed' };
+      }
+
+      const currency = (order.currency || 'usd').toLowerCase();
+
+      const skipCashPayload = {
+        amount: amountInCents,
+        currency,
+        reference: String(order.id),
+        customer: {
+          name: `${order.billing?.first_name || ''} ${order.billing?.last_name || ''}`.trim(),
+          email: order.billing?.email || '',
+          phone: order.billing?.phone || '',
+        },
+        token: skipCashToken,
+        description: `Payment for WooCommerce order #${order.id}`,
+        metadata: {
+          order_id: String(order.id),
+          customer_email: order.billing?.email || '',
+        },
+      };
+
+      const response = await axios.post(
+        `${process.env.SKIPCASH_BASE_URL}/api/v1/payment`,
+        skipCashPayload,
+        { headers: this.getSkipCashHeaders() }
+      );
+
+      if (response.data.status === 'succeeded' || response.data.status === 'completed') {
+        this.logger.log(
+          `SkipCash payment succeeded for order ${order.id} - ${response.data.transaction_id}`,
+        );
+        return {
+          status: 'completed',
+          transaction_id: response.data.transaction_id,
+          payment_url: response.data.payment_url,
+        };
+      }
+
+      if (
+        response.data.status === 'requires_action' ||
+        response.data.status === 'pending'
+      ) {
+        this.logger.warn(
+          `SkipCash payment requires action for order ${order.id}: ${response.data.status}`,
+        );
+        return {
+          status: response.data.status,
+          payment_url: response.data.payment_url
+        };
+      }
+
+      this.logger.warn(
+        `SkipCash payment for order ${order.id} not completed. Status: ${response.data.status}`,
+      );
+      return {
+        status: response.data.status ?? 'pending',
+        payment_url: response.data.payment_url
+      };
+    } catch (error: any) {
+      this.logger.error(
+        `SkipCash payment failed for order ${order.id}: ${error?.message ?? JSON.stringify(error)}`,
+      );
+
+      if (error?.response?.data || error?.type) {
+        this.logger.debug('SkipCash error detail', JSON.stringify(error?.response?.data || error));
+      }
+
+      return { status: 'failed' };
+    }
+  }
+
+
+  private getSkipCashHeaders() {
+    return {
+      'Authorization': `Bearer ${process.env.SKIPCASH_API_KEY}`,
+      'Content-Type': 'application/json'
+    };
+  }
+
+
   // Additional utility methods for order management
   async getOrder(orderId: number): Promise<WooCommerceOrder> {
     try {
@@ -617,7 +738,7 @@ export class CheckoutService {
       const res = await this.httpService.put(
         `/orders/${orderId}?force=true`,
         {
-          "status":"cancelled"
+          "status": "cancelled"
         },
         undefined,
         true,
