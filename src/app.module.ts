@@ -10,6 +10,7 @@ import { CheckoutModule } from './checkout/checkout.module';
 import { WooCommerceShippingModule } from './woo-commerceshipping/woo-commerceshipping.module';
 import { WooCommerceShippingService } from './woo-commerceshipping/woo-commerceshipping.service';
 import { WooCommerceShippingController } from './woo-commerceshipping/woo-commerceshipping.controller';
+import { TrackingModule } from './tracking/tracking.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { WooCommerceShippingController } from './woo-commerceshipping/woo-commer
     CategoriesModule,
     CheckoutModule,
     WooCommerceShippingModule,
+    TrackingModule
   ],
   providers: [CheckoutService, WooCommerceShippingService],
   controllers: [CheckoutController, WooCommerceShippingController],

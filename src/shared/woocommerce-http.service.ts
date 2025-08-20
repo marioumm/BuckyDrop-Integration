@@ -16,11 +16,11 @@ export class WooCommerceHttpService {
     this.baseUrl = {
       V1: this.configService.get<string>(
         'WOOCOMMERCE_BASE_URL_V1',
-        'https://www.7rfatk.com/wp-json/wc/store/v1',
+        'https://pro-get.camion-app.com/wp-json/wc/store/v1',
       ),
       V3: this.configService.get<string>(
         'WOOCOMMERCE_BASE_URL_V3',
-        'https://www.7rfatk.com/wp-json/wc/v3',
+        'https://pro-get.camion-app.com/wp-json/wc/v3',
       ),
     };
   }
