@@ -1,11 +1,12 @@
-import { Controller, Get } from '@nestjs/common';
+/* eslint-disable @typescript-eslint/no-unsafe-return */
+import { Controller, Get, Param, ParseIntPipe } from '@nestjs/common';
 import { CategoriesService } from './categories.service';
 
-@Controller('api')
+@Controller('api/categories')
 export class CategoriesController {
-  constructor(private readonly categoriesService: CategoriesService) {}
+  constructor(private readonly categoriesService: CategoriesService) { }
 
-  @Get('categories')
+  @Get()
   async getCategories() {
     return this.categoriesService.getCategories();
   }
@@ -18,5 +19,10 @@ export class CategoriesController {
   @Get('product-brands')
   async getProductBrands() {
     return this.categoriesService.getProductBrands();
+  }
+
+  @Get(':id')
+  async getCategoryWithSubcategories(@Param('id', ParseIntPipe) id: number) {
+    return await this.categoriesService.getCategoryWithSubcategories(id);
   }
 }
