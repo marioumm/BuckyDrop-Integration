@@ -45,16 +45,16 @@ export class ProductsService {
       return false;
     }
   }
-
+  
+  private safeParse = (val: any) =>
+    isNaN(parseFloat(val)) ? 0 : parseFloat(val);
   private transformProductPrices(product: any, multiplier = 5) {
     if (!product?.prices) return product;
 
-    const safeParse = (val: any) =>
-      isNaN(parseFloat(val)) ? 0 : parseFloat(val);
 
-    const price = safeParse(product.prices.price) * multiplier;
-    const regularPrice = safeParse(product.prices.regular_price) * multiplier;
-    const salePrice = safeParse(product.prices.sale_price) * multiplier;
+    const price = this.safeParse(product.prices.price) * multiplier;
+    const regularPrice = this.safeParse(product.prices.regular_price) * multiplier;
+    const salePrice = this.safeParse(product.prices.sale_price) * multiplier;
 
     return {
       ...product,
@@ -69,7 +69,31 @@ export class ProductsService {
 
   async getProduct(id: string, token: string) {
     try {
-      const response = await this.httpService.get(`/products/${id}`);
+      let response = await this.httpService.get(`/products/${id}`);
+      const { data: variations } = await this.httpService.get(
+        `/products/${id}/variations`,
+        undefined,
+        true,
+        'V3',
+      );
+
+      if (variations && Array.isArray(variations)) {
+        response.data['variations'] = variations.map((v) => ({
+          id: v.id,
+          attributes:
+            v.attributes?.map((attr) => ({
+              name: attr.name,
+              option: attr.option,
+            })) || [],
+          image: v.image?.src || null,
+          price: this.safeParse(v.price) * 5 || null,
+          regular_price: this.safeParse(v.regular_price) * 5 || null,
+          sale_price: this.safeParse(v.sale_price) * 5 || null,
+          stock_quantity: v.stock_quantity ?? null,
+          stock_status: v.stock_status || null,
+        }));
+      }
+
       const productData = this.transformProductPrices(response.data);
 
       this.logger.log(`Product #${id} details fetched successfully`);
@@ -111,7 +135,31 @@ export class ProductsService {
 
   async getProduct_Sync(id: string) {
     try {
-      const response = await this.httpService.get(`/products/${id}`);
+            let response = await this.httpService.get(`/products/${id}`);
+      const { data: variations } = await this.httpService.get(
+        `/products/${id}/variations`,
+        undefined,
+        true,
+        'V3',
+      );
+
+      if (variations && Array.isArray(variations)) {
+        response.data['variations'] = variations.map((v) => ({
+          id: v.id,
+          attributes:
+            v.attributes?.map((attr) => ({
+              name: attr.name,
+              option: attr.option,
+            })) || [],
+          image: v.image?.src || null,
+          price: this.safeParse(v.price) * 5 || null,
+          regular_price: this.safeParse(v.regular_price) * 5 || null,
+          sale_price: this.safeParse(v.sale_price) * 5 || null,
+          stock_quantity: v.stock_quantity ?? null,
+          stock_status: v.stock_status || null,
+        }));
+      }
+
       const productData = this.transformProductPrices(response.data);
       this.logger.log(`Product #${id} details fetched successfully`);
       return productData;
