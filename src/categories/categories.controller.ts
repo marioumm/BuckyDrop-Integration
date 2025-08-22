@@ -11,6 +11,12 @@ export class CategoriesController {
     return this.categoriesService.getCategories();
   }
 
+  
+  @Get('main')
+  async getMainCategories() {
+    return this.categoriesService.getMainCategories();
+  }
+
   @Get('product-tags')
   async getProductTags() {
     return this.categoriesService.getProductTags();
@@ -25,4 +31,6 @@ export class CategoriesController {
   async getCategoryWithSubcategories(@Param('id', ParseIntPipe) id: number) {
     return await this.categoriesService.getCategoryWithSubcategories(id);
   }
+
+
 }

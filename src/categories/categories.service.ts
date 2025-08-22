@@ -22,7 +22,38 @@ export interface CategoryWithSubcategories {
 export class CategoriesService {
   private readonly logger = new Logger(CategoriesService.name);
 
-  constructor(private readonly httpService: WooCommerceHttpService) {}
+  constructor(private readonly httpService: WooCommerceHttpService) { }
+
+
+  async getMainCategories(): Promise<CategoryWithSubcategories[]> {
+    try {
+      const response = await this.httpService.get('/products/categories');
+      const mainCategories = response.data.filter(
+        (cat: any) => cat.parent === 0
+      );
+      return mainCategories;
+    } catch (error) {
+      this.logger.error('Error fetching main categories:', error.message);
+      throw new HttpException(
+        'Failed to fetch main categories',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  async getProductsByCategory(categoryId: number) {
+    try {
+      const response = await this.httpService.get(`/products?category=${categoryId}`);
+      return response.data;
+    } catch (error) {
+      this.logger.error('Error fetching products by category:', error.message);
+      throw new HttpException(
+        'Failed to fetch products by category',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
 
   async getCategories() {
     try {
@@ -60,11 +91,11 @@ export class CategoriesService {
 
     } catch (error) {
       this.logger.error(`Error fetching category ${categoryId}:`, error.message);
-      
+
       if (error instanceof NotFoundException) {
         throw error;
       }
-      
+
       throw new HttpException(
         `Failed to fetch category with ID ${categoryId}`,
         HttpStatus.INTERNAL_SERVER_ERROR,
