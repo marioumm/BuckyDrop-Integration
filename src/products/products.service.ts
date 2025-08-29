@@ -179,50 +179,85 @@ export class ProductsService {
   }
 
   async getProducts(query: ProductQueryDto) {
-    try {
-      const params = new URLSearchParams();
-      const { min_price, max_price, ...filteredQuery } = query;
+  try {
+    const params = new URLSearchParams();
+    const { min_price, max_price, ...filteredQuery } = query;
 
-      Object.entries(filteredQuery).forEach(([key, value]) => {
-        if (value) params.append(key, String(value));
-      });
+    Object.entries(filteredQuery).forEach(([key, value]) => {
+      if (value) params.append(key, String(value));
+    });
 
+    const fetchProducts = async (perPage: number, page: number) => {
       const response = await this.httpService.get(
-        `/products?${params.toString()}`,
+        `/products?${params.toString()}&per_page=${perPage}&page=${page}`,
       );
-      const originalProducts = response.data;
+      return response;
+    };
 
-      const filteredProducts = originalProducts.filter((product: any) => {
-        const rawPrice = parseFloat(product.prices?.price ?? '0') / 100;
+    const perPage = parseInt(query.per_page ?? '10');
+    const currentPage = parseInt(query.page ?? '1');
+
+    let response = await fetchProducts(perPage, currentPage);
+    let originalProducts = response.data;
+
+    // filter out by price & min/max
+    let filteredProducts = originalProducts.filter((product: any) => {
+      const rawPrice = parseFloat(product.prices?.price ?? '0');
+      const hasImages = Array.isArray(product.images) && product.images.length > 0;
+      if (rawPrice <= 0 || !hasImages) return false;
+
+      const withinMin = min_price ? rawPrice >= parseFloat(min_price) : true;
+      const withinMax = max_price ? rawPrice <= parseFloat(max_price) : true;
+      return withinMin && withinMax;
+    });
+
+    // if not enough products → request more
+    let badCount = perPage - filteredProducts.length;
+    let nextPage = currentPage + 1;
+
+    while (badCount > 0 && nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')) {
+      const extraResponse = await fetchProducts(badCount, nextPage);
+      const extraProducts = extraResponse.data.filter((product: any) => {
+        const rawPrice = parseFloat(product.prices?.price ?? '0');
+        const hasImages = Array.isArray(product.images) && product.images.length > 0;
+        if (rawPrice <= 0 || !hasImages) return false;
+
         const withinMin = min_price ? rawPrice >= parseFloat(min_price) : true;
         const withinMax = max_price ? rawPrice <= parseFloat(max_price) : true;
         return withinMin && withinMax;
       });
 
-      const modifiedProducts = filteredProducts.map((product) =>
-        this.transformProductPrices(product),
-      );
-
-      return {
-        products: modifiedProducts,
-        pagination: {
-          total: parseInt(response.headers['x-wp-total']) || 0,
-          totalPages: parseInt(response.headers['x-wp-totalpages']) || 1,
-          currentPage: parseInt(query.page ?? '1'),
-          perPage: parseInt(query.per_page ?? '10'),
-        },
-      };
-    } catch (error) {
-      this.logger.error(`Error fetching products: ${error?.message}`);
-      throw new HttpException(
-        {
-          error: 'Failed to fetch products',
-          details: error.response?.data || error.message,
-        },
-        HttpStatus.INTERNAL_SERVER_ERROR,
-      );
+      filteredProducts = [...filteredProducts, ...extraProducts];
+      badCount = perPage - filteredProducts.length;
+      nextPage++;
     }
+
+    // final transform
+    const modifiedProducts = filteredProducts
+      .slice(0, perPage) // in case we got extra
+      .map((product) => this.transformProductPrices(product));
+
+    return {
+      products: modifiedProducts,
+      pagination: {
+        total: parseInt(response.headers['x-wp-total']) || 0,
+        totalPages: parseInt(response.headers['x-wp-totalpages']) || 1,
+        currentPage,
+        perPage,
+      },
+    };
+  } catch (error) {
+    this.logger.error(`Error fetching products: ${error?.message}`);
+    throw new HttpException(
+      {
+        error: 'Failed to fetch products',
+        details: error.response?.data || error.message,
+      },
+      HttpStatus.INTERNAL_SERVER_ERROR,
+    );
   }
+}
+
 
   async getProductAttributes(id: string) {
     try {
