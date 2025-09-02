@@ -1,19 +1,37 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument */
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import {
   Injectable,
   Logger,
   HttpException,
   HttpStatus,
-  BadRequestException,
 } from '@nestjs/common';
 import { WooCommerceHttpService } from '../shared/woocommerce-http.service';
 import { ProductQueryDto } from './dto/prodcut-query.dto';
+import { TranslationService } from './translation.service';
 import axios, { AxiosResponse } from 'axios';
 
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
   private existFlag = false;
-  constructor(private readonly httpService: WooCommerceHttpService) {}
+  constructor(
+    private readonly httpService: WooCommerceHttpService,
+    private readonly translationService: TranslationService 
+
+  ) {}
+
+
+   private extractLanguage(headers?: any): string {
+    const acceptLanguage = headers?.['accept-language'] || headers?.['Accept-Language'];
+    if (acceptLanguage) {
+      return acceptLanguage.split('-')[0].toLowerCase();
+    }
+    return 'en';
+  }
 
   /**
    * Helper to check if a product exists in wishlist/cart, with 500 fallback.
@@ -67,10 +85,14 @@ export class ProductsService {
     };
   }
 
-  async getProduct(id: string, token: string) {
+    async getProduct(id: string, token: string, language?: string) {
     try {
       const response = await this.httpService.get(`/products/${id}`);
-      const productData = this.transformProductPrices(response.data);
+      let productData = this.transformProductPrices(response.data);
+
+      if (language && language !== 'en') {
+        productData = await this.translationService.translateProduct(productData, language);
+      }
 
       this.logger.log(`Product #${id} details fetched successfully`);
 
@@ -88,6 +110,7 @@ export class ProductsService {
         ...productData,
         wishlist,
         cart,
+        language: language || 'en', 
         ...(this.existFlag
           ? {}
           : {
@@ -109,12 +132,20 @@ export class ProductsService {
     }
   }
 
-  async getProduct_Sync(id: string) {
+  async getProduct_Sync(id: string, language?: string) {
     try {
       const response = await this.httpService.get(`/products/${id}`);
-      const productData = this.transformProductPrices(response.data);
+      let productData = this.transformProductPrices(response.data);
+      
+      if (language && language !== 'en') {
+        productData = await this.translationService.translateProduct(productData, language);
+      }
+
       this.logger.log(`Product #${id} details fetched successfully`);
-      return productData;
+      return {
+        ...productData,
+        language: language || 'en'
+      };
     } catch (error) {
       this.logger.error(`Error fetching product #${id}: ${error?.message}`);
       if (error.response?.status === 404) {
@@ -130,7 +161,7 @@ export class ProductsService {
     }
   }
 
-  async getProducts(query: ProductQueryDto) {
+  async getProducts(query: ProductQueryDto, language?: string) {
     try {
       const params = new URLSearchParams();
       const { min_price, max_price, ...filteredQuery } = query;
@@ -151,9 +182,17 @@ export class ProductsService {
         return withinMin && withinMax;
       });
 
-      const modifiedProducts = filteredProducts.map((product) =>
+      let modifiedProducts = filteredProducts.map((product) =>
         this.transformProductPrices(product),
       );
+
+      if (language && language !== 'en') {
+        modifiedProducts = await Promise.all(
+          modifiedProducts.map(product => 
+            this.translationService.translateProduct(product, language)
+          )
+        );
+      }
 
       return {
         products: modifiedProducts,
@@ -163,6 +202,7 @@ export class ProductsService {
           currentPage: parseInt(query.page ?? '1'),
           perPage: parseInt(query.per_page ?? '10'),
         },
+        language: language || 'en'
       };
     } catch (error) {
       this.logger.error(`Error fetching products: ${error?.message}`);
@@ -175,6 +215,7 @@ export class ProductsService {
       );
     }
   }
+
 
   async getProductAttributes(id: string) {
     try {

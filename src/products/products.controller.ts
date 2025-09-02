@@ -1,3 +1,7 @@
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
+/* eslint-disable @typescript-eslint/no-unsafe-call */
+/* eslint-disable @typescript-eslint/no-unsafe-return */
 import {
   Body,
   Controller,
@@ -8,7 +12,7 @@ import {
   Put,
   Query,
   Request,
-  UnauthorizedException,
+  Headers
 } from '@nestjs/common';
 import { ProductsService } from './products.service';
 import { ProductQueryDto } from './dto/prodcut-query.dto';
@@ -18,8 +22,13 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   @Get()
-  async getProducts(@Query() query: ProductQueryDto) {
-    return this.productsService.getProducts(query);
+  async getProducts(
+    @Query() query: ProductQueryDto,
+    @Headers('accept-language') acceptLanguage?: string,
+    @Query('lang') langQuery?: string
+  ) {
+    const language = langQuery || (acceptLanguage?.split('-')[0]) || 'en';
+    return this.productsService.getProducts(query , language);
   }
 
   @Get('attributes')
@@ -38,15 +47,27 @@ export class ProductsController {
   }
 
   @Get(':id')
-  async getProduct(@Param('id') id: string, @Request() req: any) {
+  async getProduct(
+    @Param('id') id: string, 
+    @Request() req: any,
+    @Headers('accept-language') acceptLanguage?: string,
+    @Query('lang') langQuery?: string
+  ) {
     let token = req.headers['authorization']?.replace('Bearer ', '');
     if (!token) token = '';
-    return this.productsService.getProduct(id, token);
+    
+    const language = langQuery || (acceptLanguage?.split('-')[0]) || 'en';
+    return this.productsService.getProduct(id, token, language);
   }
 
-  @Get('sync/:id')
-  async getProductSync(@Param('id') id: string) {
-    return this.productsService.getProduct_Sync(id);
+ @Get('sync/:id')
+  async getProductSync(
+    @Param('id') id: string,
+    @Headers('accept-language') acceptLanguage?: string,
+    @Query('lang') langQuery?: string
+  ) {
+    const language = langQuery || (acceptLanguage?.split('-')[0]) || 'en';
+    return this.productsService.getProduct_Sync(id, language);
   }
 
   /**
