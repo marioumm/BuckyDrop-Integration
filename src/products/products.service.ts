@@ -1,3 +1,4 @@
+/* eslint-disable prefer-const */
 /* eslint-disable @typescript-eslint/no-unsafe-argument */
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-return */
@@ -18,14 +19,13 @@ import axios, { AxiosResponse } from 'axios';
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
   private existFlag = false;
+  
   constructor(
     private readonly httpService: WooCommerceHttpService,
     private readonly translationService: TranslationService 
-
   ) {}
 
-
-   private extractLanguage(headers?: any): string {
+  private extractLanguage(headers?: any): string {
     const acceptLanguage = headers?.['accept-language'] || headers?.['Accept-Language'];
     if (acceptLanguage) {
       return acceptLanguage.split('-')[0].toLowerCase();
@@ -58,17 +58,15 @@ export class ProductsService {
           `${type} service returned 500 — assuming not in ${type}`,
         );
       }
-
-      // console.error(err); // Debugging
       return false;
     }
   }
   
   private safeParse = (val: any) =>
     isNaN(parseFloat(val)) ? 0 : parseFloat(val);
+    
   private transformProductPrices(product: any, multiplier = 5) {
     if (!product?.prices) return product;
-
 
     const price = this.safeParse(product.prices.price) * multiplier;
     const regularPrice = this.safeParse(product.prices.regular_price) * multiplier;
@@ -85,10 +83,14 @@ export class ProductsService {
     };
   }
 
-    async getProduct(id: string, token: string, language?: string) {
+  async getProduct(id: string, token: string, language?: string) {
     try {
       const response = await this.httpService.get(`/products/${id}`);
-      const productData = this.transformProductPrices(response.data);
+      let productData = this.transformProductPrices(response.data);
+
+      if (language && language !== 'en') {
+        productData = await this.translationService.translateProduct(productData, language);
+      }
 
       this.logger.log(`Product #${id} details fetched successfully`);
 
@@ -131,7 +133,12 @@ export class ProductsService {
   async getProduct_Sync(id: string, language?: string) {
     try {
       const response = await this.httpService.get(`/products/${id}`);
-      const productData = this.transformProductPrices(response.data);
+      let productData = this.transformProductPrices(response.data);
+      
+      if (language && language !== 'en') {
+        productData = await this.translationService.translateProduct(productData, language);
+      }
+
       this.logger.log(`Product #${id} details fetched successfully`);
       return {
         ...productData,
@@ -152,46 +159,30 @@ export class ProductsService {
     }
   }
 
-  async getProducts(query: ProductQueryDto) {
+  async getProducts(query: ProductQueryDto, language?: string) {
     try {
       const params = new URLSearchParams();
       const { min_price, max_price, ...filteredQuery } = query;
 
-    Object.entries(filteredQuery).forEach(([key, value]) => {
-      if (value) params.append(key, String(value));
-    });
+      Object.entries(filteredQuery).forEach(([key, value]) => {
+        if (value) params.append(key, String(value));
+      });
 
-    const fetchProducts = async (perPage: number, page: number) => {
-      const response = await this.httpService.get(
-        `/products?${params.toString()}&per_page=${perPage}&page=${page}`,
-      );
-      return response;
-    };
+      const fetchProducts = async (perPage: number, page: number) => {
+        const response = await this.httpService.get(
+          `/products?${params.toString()}&per_page=${perPage}&page=${page}`,
+        );
+        return response;
+      };
 
-    const perPage = parseInt(query.per_page ?? '10');
-    const currentPage = parseInt(query.page ?? '1');
+      const perPage = parseInt(query.per_page ?? '10');
+      const currentPage = parseInt(query.page ?? '1');
 
-    let response = await fetchProducts(perPage, currentPage);
-    let originalProducts = response.data;
+      let response = await fetchProducts(perPage, currentPage);
+      let originalProducts = response.data;
 
-    // filter out by price & min/max
-    let filteredProducts = originalProducts.filter((product: any) => {
-      const rawPrice = parseFloat(product.prices?.price ?? '0');
-      const hasImages = Array.isArray(product.images) && product.images.length > 0;
-      if (rawPrice <= 0 || !hasImages) return false;
-
-      const withinMin = min_price ? rawPrice >= parseFloat(min_price) : true;
-      const withinMax = max_price ? rawPrice <= parseFloat(max_price) : true;
-      return withinMin && withinMax;
-    });
-
-    // if not enough products → request more
-    let badCount = perPage - filteredProducts.length;
-    let nextPage = currentPage + 1;
-
-    while (badCount > 0 && nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')) {
-      const extraResponse = await fetchProducts(badCount, nextPage);
-      const extraProducts = extraResponse.data.filter((product: any) => {
+      // filter out by price & min/max
+      let filteredProducts = originalProducts.filter((product: any) => {
         const rawPrice = parseFloat(product.prices?.price ?? '0');
         const hasImages = Array.isArray(product.images) && product.images.length > 0;
         if (rawPrice <= 0 || !hasImages) return false;
@@ -201,9 +192,39 @@ export class ProductsService {
         return withinMin && withinMax;
       });
 
-      const modifiedProducts = filteredProducts.map((product) =>
+      // if not enough products → request more
+      let badCount = perPage - filteredProducts.length;
+      let nextPage = currentPage + 1;
+
+      while (badCount > 0 && nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')) {
+        const extraResponse = await fetchProducts(badCount, nextPage);
+        const extraProducts = extraResponse.data.filter((product: any) => {
+          const rawPrice = parseFloat(product.prices?.price ?? '0');
+          const hasImages = Array.isArray(product.images) && product.images.length > 0;
+          if (rawPrice <= 0 || !hasImages) return false;
+
+          const withinMin = min_price ? rawPrice >= parseFloat(min_price) : true;
+          const withinMax = max_price ? rawPrice <= parseFloat(max_price) : true;
+          return withinMin && withinMax;
+        });
+
+        filteredProducts = [...filteredProducts, ...extraProducts];
+        badCount = perPage - filteredProducts.length;
+        nextPage++;
+      } // ✅ إضافة القوس المفقود هنا
+
+      let modifiedProducts = filteredProducts.map((product) =>
         this.transformProductPrices(product),
       );
+
+      // ✅ إضافة الترجمة
+      if (language && language !== 'en') {
+        modifiedProducts = await Promise.all(
+          modifiedProducts.map(product => 
+            this.translationService.translateProduct(product, language)
+          )
+        );
+      }
 
       return {
         products: modifiedProducts,
@@ -213,6 +234,7 @@ export class ProductsService {
           currentPage: parseInt(query.page ?? '1'),
           perPage: parseInt(query.per_page ?? '10'),
         },
+        language: language || 'en'
       };
     } catch (error) {
       this.logger.error(`Error fetching products: ${error?.message}`);
