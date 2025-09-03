@@ -4,12 +4,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-return */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-import {
-  Injectable,
-  Logger,
-  HttpException,
-  HttpStatus,
-} from '@nestjs/common';
+import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { WooCommerceHttpService } from '../shared/woocommerce-http.service';
 import { ProductQueryDto } from './dto/prodcut-query.dto';
 import { TranslationService } from './translation.service';
@@ -19,14 +14,15 @@ import axios, { AxiosResponse } from 'axios';
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
   private existFlag = false;
-  
+
   constructor(
     private readonly httpService: WooCommerceHttpService,
-    private readonly translationService: TranslationService 
+    private readonly translationService: TranslationService,
   ) {}
 
   private extractLanguage(headers?: any): string {
-    const acceptLanguage = headers?.['accept-language'] || headers?.['Accept-Language'];
+    const acceptLanguage =
+      headers?.['accept-language'] || headers?.['Accept-Language'];
     if (acceptLanguage) {
       return acceptLanguage.split('-')[0].toLowerCase();
     }
@@ -61,15 +57,16 @@ export class ProductsService {
       return false;
     }
   }
-  
+
   private safeParse = (val: any) =>
     isNaN(parseFloat(val)) ? 0 : parseFloat(val);
-    
+
   private transformProductPrices(product: any, multiplier = 5) {
     if (!product?.prices) return product;
 
     const price = this.safeParse(product.prices.price) * multiplier;
-    const regularPrice = this.safeParse(product.prices.regular_price) * multiplier;
+    const regularPrice =
+      this.safeParse(product.prices.regular_price) * multiplier;
     const salePrice = this.safeParse(product.prices.sale_price) * multiplier;
 
     return {
@@ -85,11 +82,39 @@ export class ProductsService {
 
   async getProduct(id: string, token: string, language?: string) {
     try {
-      const response = await this.httpService.get(`/products/${id}`);
+      let response = await this.httpService.get(`/products/${id}`);
+      const { data: variations } = await this.httpService.get(
+        `/products/${id}/variations`,
+        undefined,
+        true,
+        'V3',
+      );
+
+      if (variations && Array.isArray(variations)) {
+        response.data['variations'] = variations.map((v) => ({
+          id: v.id,
+          attributes:
+            v.attributes?.map((attr) => ({
+              name: attr.name,
+              option: attr.option,
+            })) || [],
+          image: v.image?.src || null,
+          price: this.safeParse(v.price) * 5 || null,
+          regular_price: this.safeParse(v.regular_price) * 5 || null,
+          sale_price: this.safeParse(v.sale_price) * 5 || null,
+          stock_quantity: v.stock_quantity ?? null,
+          stock_status: v.stock_status || null,
+        }));
+      }
+
       let productData = this.transformProductPrices(response.data);
 
+
       if (language && language !== 'en') {
-        productData = await this.translationService.translateProduct(productData, language);
+        productData = await this.translationService.translateProduct(
+          productData,
+          language,
+        );
       }
 
       this.logger.log(`Product #${id} details fetched successfully`);
@@ -108,7 +133,7 @@ export class ProductsService {
         ...productData,
         wishlist,
         cart,
-        language: language || 'en', 
+        language: language || 'en',
         ...(this.existFlag
           ? {}
           : {
@@ -132,17 +157,44 @@ export class ProductsService {
 
   async getProduct_Sync(id: string, language?: string) {
     try {
-      const response = await this.httpService.get(`/products/${id}`);
+      let response = await this.httpService.get(`/products/${id}`);
+      const { data: variations } = await this.httpService.get(
+        `/products/${id}/variations`,
+        undefined,
+        true,
+        'V3',
+      );
+
+      if (variations && Array.isArray(variations)) {
+        response.data['variations'] = variations.map((v) => ({
+          id: v.id,
+          attributes:
+            v.attributes?.map((attr) => ({
+              name: attr.name,
+              option: attr.option,
+            })) || [],
+          image: v.image?.src || null,
+          price: this.safeParse(v.price) * 5 || null,
+          regular_price: this.safeParse(v.regular_price) * 5 || null,
+          sale_price: this.safeParse(v.sale_price) * 5 || null,
+          stock_quantity: v.stock_quantity ?? null,
+          stock_status: v.stock_status || null,
+        }));
+      }
+
       let productData = this.transformProductPrices(response.data);
       
       if (language && language !== 'en') {
-        productData = await this.translationService.translateProduct(productData, language);
+        productData = await this.translationService.translateProduct(
+          productData,
+          language,
+        );
       }
 
       this.logger.log(`Product #${id} details fetched successfully`);
       return {
         ...productData,
-        language: language || 'en'
+        language: language || 'en',
       };
     } catch (error) {
       this.logger.error(`Error fetching product #${id}: ${error?.message}`);
@@ -184,7 +236,8 @@ export class ProductsService {
       // filter out by price & min/max
       let filteredProducts = originalProducts.filter((product: any) => {
         const rawPrice = parseFloat(product.prices?.price ?? '0');
-        const hasImages = Array.isArray(product.images) && product.images.length > 0;
+        const hasImages =
+          Array.isArray(product.images) && product.images.length > 0;
         if (rawPrice <= 0 || !hasImages) return false;
 
         const withinMin = min_price ? rawPrice >= parseFloat(min_price) : true;
@@ -196,15 +249,23 @@ export class ProductsService {
       let badCount = perPage - filteredProducts.length;
       let nextPage = currentPage + 1;
 
-      while (badCount > 0 && nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')) {
+      while (
+        badCount > 0 &&
+        nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')
+      ) {
         const extraResponse = await fetchProducts(badCount, nextPage);
         const extraProducts = extraResponse.data.filter((product: any) => {
           const rawPrice = parseFloat(product.prices?.price ?? '0');
-          const hasImages = Array.isArray(product.images) && product.images.length > 0;
+          const hasImages =
+            Array.isArray(product.images) && product.images.length > 0;
           if (rawPrice <= 0 || !hasImages) return false;
 
-          const withinMin = min_price ? rawPrice >= parseFloat(min_price) : true;
-          const withinMax = max_price ? rawPrice <= parseFloat(max_price) : true;
+          const withinMin = min_price
+            ? rawPrice >= parseFloat(min_price)
+            : true;
+          const withinMax = max_price
+            ? rawPrice <= parseFloat(max_price)
+            : true;
           return withinMin && withinMax;
         });
 
@@ -213,16 +274,16 @@ export class ProductsService {
         nextPage++;
       } // ✅ إضافة القوس المفقود هنا
 
-      let modifiedProducts = filteredProducts.map((product) =>
-        this.transformProductPrices(product),
-      );
+      let modifiedProducts = filteredProducts
+        .slice(0, perPage) // in case we got extra
+        .map((product) => this.transformProductPrices(product));
 
       // ✅ إضافة الترجمة
       if (language && language !== 'en') {
         modifiedProducts = await Promise.all(
-          modifiedProducts.map(product => 
-            this.translationService.translateProduct(product, language)
-          )
+          modifiedProducts.map((product) =>
+            this.translationService.translateProduct(product, language),
+          ),
         );
       }
 
@@ -234,7 +295,7 @@ export class ProductsService {
           currentPage: parseInt(query.page ?? '1'),
           perPage: parseInt(query.per_page ?? '10'),
         },
-        language: language || 'en'
+        language: language || 'en',
       };
     } catch (error) {
       this.logger.error(`Error fetching products: ${error?.message}`);
@@ -280,7 +341,7 @@ export class ProductsService {
         ? `/products/reviews?product_id=${productId}}`
         : '/products/reviews';
       const response = await this.httpService.get(endpoint);
-      
+
       return response.data;
     } catch (error) {
       this.logger.error('Error fetching product reviews:', error.message);
