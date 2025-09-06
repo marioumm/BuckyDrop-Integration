@@ -109,7 +109,6 @@ export class ProductsService {
 
       let productData = this.transformProductPrices(response.data);
 
-
       if (language && language !== 'en') {
         productData = await this.translationService.translateProduct(
           productData,
@@ -183,7 +182,7 @@ export class ProductsService {
       }
 
       let productData = this.transformProductPrices(response.data);
-      
+
       if (language && language !== 'en') {
         productData = await this.translationService.translateProduct(
           productData,
@@ -253,7 +252,7 @@ export class ProductsService {
         badCount > 0 &&
         nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')
       ) {
-        const extraResponse = await fetchProducts(badCount, nextPage);
+        const extraResponse = await fetchProducts(badCount + 30, nextPage);
         const extraProducts = extraResponse.data.filter((product: any) => {
           const rawPrice = parseFloat(product.prices?.price ?? '0');
           const hasImages =
@@ -268,17 +267,16 @@ export class ProductsService {
             : true;
           return withinMin && withinMax;
         });
-
+        console.log(`Fetched page ${nextPage}, got ${extraProducts.length} valid products`);
         filteredProducts = [...filteredProducts, ...extraProducts];
         badCount = perPage - filteredProducts.length;
-        nextPage++;
-      } // ✅ إضافة القوس المفقود هنا
-
+        nextPage+=1;
+      }
+      
       let modifiedProducts = filteredProducts
         .slice(0, perPage) // in case we got extra
         .map((product) => this.transformProductPrices(product));
 
-      // ✅ إضافة الترجمة
       if (language && language !== 'en') {
         modifiedProducts = await Promise.all(
           modifiedProducts.map((product) =>
