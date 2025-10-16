@@ -4,7 +4,12 @@
 /* eslint-disable @typescript-eslint/no-unsafe-return */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-import { Injectable, Logger, HttpException, HttpStatus, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
 import { WooCommerceHttpService } from '../shared/woocommerce-http.service';
 import { ProductQueryDto } from './dto/prodcut-query.dto';
 import { TranslationService } from './translation.service';
@@ -15,43 +20,11 @@ import Redis from 'ioredis';
 export class ProductsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ProductsService.name);
   private existFlag = false;
-  private redis: Redis;
-
+  
   constructor(
     private readonly httpService: WooCommerceHttpService,
-    private readonly translationService: TranslationService,
+    private readonly translationService: TranslationService 
   ) {}
-
-  async onModuleInit() {
-    try {
-      this.redis = new Redis({
-        host: process.env.REDIS_HOST || 'localhost',
-        port: Number(process.env.REDIS_PORT) || 6379,
-        password: process.env.REDIS_PASSWORD || undefined,
-        retryStrategy: (times) => {
-          const delay = Math.min(times * 50, 2000);
-          return delay;
-        },
-      });
-
-      this.redis.on('connect', () => {
-        this.logger.log('✅ Redis connected successfully');
-      });
-
-      this.redis.on('error', (err) => {
-        this.logger.error('❌ Redis connection error:', err);
-      });
-    } catch (error) {
-      this.logger.error('Failed to initialize Redis:', error);
-    }
-  }
-
-  async onModuleDestroy() {
-    if (this.redis) {
-      await this.redis.quit();
-      this.logger.log('Redis connection closed');
-    }
-  }
 
   private extractLanguage(headers?: any): string {
     const acceptLanguage =
@@ -181,7 +154,31 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
 
   async getProduct(id: string, token: string, language?: string) {
     try {
-      const response = await this.httpService.get(`/products/${id}`);
+      let response = await this.httpService.get(`/products/${id}`);
+      const { data: variations } = await this.httpService.get(
+        `/products/${id}/variations`,
+        undefined,
+        true,
+        'V3',
+      );
+
+      if (variations && Array.isArray(variations)) {
+        response.data['variations'] = variations.map((v) => ({
+          id: v.id,
+          attributes:
+            v.attributes?.map((attr) => ({
+              name: attr.name,
+              option: attr.option,
+            })) || [],
+          image: v.image?.src || null,
+          price: this.safeParse(v.price) * 5 || null,
+          regular_price: this.safeParse(v.regular_price) * 5 || null,
+          sale_price: this.safeParse(v.sale_price) * 5 || null,
+          stock_quantity: v.stock_quantity ?? null,
+          stock_status: v.stock_status || null,
+        }));
+      }
+
       let productData = this.transformProductPrices(response.data);
 
       const viewCount = await this.recordProductView(id);
@@ -209,10 +206,7 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
         ...productData,
         wishlist,
         cart,
-        viewCount, 
-        reviewsCount: productData.rating_count || 0, 
-        averageRating: parseFloat(productData.average_rating || '0'), 
-        language: language || 'en',
+        language: language || 'en', 
         ...(this.existFlag
           ? {}
           : {
@@ -236,11 +230,33 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
 
   async getProduct_Sync(id: string, language?: string) {
     try {
-      const response = await this.httpService.get(`/products/${id}`);
+      let response = await this.httpService.get(`/products/${id}`);
+      const { data: variations } = await this.httpService.get(
+        `/products/${id}/variations`,
+        undefined,
+        true,
+        'V3',
+      );
+
+      if (variations && Array.isArray(variations)) {
+        response.data['variations'] = variations.map((v) => ({
+          id: v.id,
+          attributes:
+            v.attributes?.map((attr) => ({
+              name: attr.name,
+              option: attr.option,
+            })) || [],
+          image: v.image?.src || null,
+          price: this.safeParse(v.price) * 5 || null,
+          regular_price: this.safeParse(v.regular_price) * 5 || null,
+          sale_price: this.safeParse(v.sale_price) * 5 || null,
+          stock_quantity: v.stock_quantity ?? null,
+          stock_status: v.stock_status || null,
+        }));
+      }
+
       let productData = this.transformProductPrices(response.data);
-
-      const viewCount = await this.getProductViewCount(id);
-
+      
       if (language && language !== 'en') {
         productData = await this.translationService.translateProduct(
           productData,
@@ -251,10 +267,7 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`Product #${id} details fetched successfully`);
       return {
         ...productData,
-        viewCount,
-        reviewsCount: productData.rating_count || 0,
-        averageRating: parseFloat(productData.average_rating || '0'),
-        language: language || 'en',
+        language: language || 'en'
       };
     } catch (error) {
       this.logger.error(`Error fetching product #${id}: ${error?.message}`);
@@ -322,10 +335,7 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
       let badCount = perPage - filteredProducts.length;
       let nextPage = currentPage + 1;
 
-      while (
-        badCount > 0 &&
-        nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')
-      ) {
+      while (badCount > 0 && nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')) {
         const extraResponse = await fetchProducts(badCount, nextPage);
         const extraProducts = extraResponse.data.filter((product: any) => {
           const rawPrice = parseFloat(product.prices?.price ?? '0');
@@ -341,28 +351,17 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
             : true;
           return withinMin && withinMax;
         });
-
+        console.log(`Fetched page ${nextPage}, got ${extraProducts.length} valid products`);
         filteredProducts = [...filteredProducts, ...extraProducts];
         badCount = perPage - filteredProducts.length;
         nextPage++;
-      }
+      } // ✅ إضافة القوس المفقود هنا
 
       let modifiedProducts = filteredProducts.map((product) =>
         this.transformProductPrices(product),
       );
 
-      // ✅ جلب عدد المشاهدات لكل المنتجات دفعة واحدة
-      const productIds = modifiedProducts.map((p) => String(p.id));
-      const viewCounts = await this.getProductsViewCounts(productIds);
-
-      // ✅ إضافة عدد المشاهدات والتقييمات لكل منتج
-      modifiedProducts = modifiedProducts.map((product) => ({
-        ...product,
-        viewCount: viewCounts.get(String(product.id)) || 0,
-        reviewsCount: product.rating_count || 0,
-        averageRating: parseFloat(product.average_rating || '0'),
-      }));
-
+      // ✅ إضافة الترجمة
       if (language && language !== 'en') {
         modifiedProducts = await Promise.all(
           modifiedProducts.map((product) =>
