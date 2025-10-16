@@ -4,12 +4,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-return */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-import {
-  Injectable,
-  Logger,
-  HttpException,
-  HttpStatus,
-} from '@nestjs/common';
+
+import { Injectable, Logger, HttpException, HttpStatus, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { WooCommerceHttpService } from '../shared/woocommerce-http.service';
 import { ProductQueryDto } from './dto/prodcut-query.dto';
 import { TranslationService } from './translation.service';
@@ -20,11 +16,44 @@ import Redis from 'ioredis';
 export class ProductsService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(ProductsService.name);
   private existFlag = false;
-  
+  private redis: Redis;
+
+
   constructor(
     private readonly httpService: WooCommerceHttpService,
-    private readonly translationService: TranslationService 
+    private readonly translationService: TranslationService,
   ) {}
+
+  async onModuleInit() {
+    try {
+      this.redis = new Redis({
+        host: process.env.REDIS_HOST || 'localhost',
+        port: Number(process.env.REDIS_PORT) || 6379,
+        password: process.env.REDIS_PASSWORD || undefined,
+        retryStrategy: (times) => {
+          const delay = Math.min(times * 50, 2000);
+          return delay;
+        },
+      });
+
+      this.redis.on('connect', () => {
+        this.logger.log('✅ Redis connected successfully');
+      });
+
+      this.redis.on('error', (err) => {
+        this.logger.error('❌ Redis connection error:', err);
+      });
+    } catch (error) {
+      this.logger.error('Failed to initialize Redis:', error);
+    }
+  }
+
+  async onModuleDestroy() {
+    if (this.redis) {
+      await this.redis.quit();
+      this.logger.log('Redis connection closed');
+    }
+  }
 
   private extractLanguage(headers?: any): string {
     const acceptLanguage =
@@ -206,7 +235,11 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
         ...productData,
         wishlist,
         cart,
-        language: language || 'en', 
+        viewCount, 
+        reviewsCount: productData.rating_count || 0, 
+        averageRating: parseFloat(productData.average_rating || '0'), 
+
+        language: language || 'en',
         ...(this.existFlag
           ? {}
           : {
@@ -256,7 +289,9 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
       }
 
       let productData = this.transformProductPrices(response.data);
-      
+
+      const viewCount = await this.getProductViewCount(id);
+
       if (language && language !== 'en') {
         productData = await this.translationService.translateProduct(
           productData,
@@ -267,7 +302,11 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`Product #${id} details fetched successfully`);
       return {
         ...productData,
-        language: language || 'en'
+        viewCount,
+        reviewsCount: productData.rating_count || 0,
+        averageRating: parseFloat(productData.average_rating || '0'),
+
+        language: language || 'en',
       };
     } catch (error) {
       this.logger.error(`Error fetching product #${id}: ${error?.message}`);
@@ -284,113 +323,130 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  async getProducts(query: ProductQueryDto, language?: string) {
-    try {
-      const params = new URLSearchParams();
-      const { min_price, max_price, search, ...filteredQuery } = query;
+ async getProducts(query: ProductQueryDto, language?: string) {
+  try {
+    const params = new URLSearchParams();
+    const { min_price, max_price, search, ...filteredQuery } = query;
 
-      let searchTerm = search;
-      if (search && language && language !== 'en') {
-        try {
-          searchTerm = await this.translationService.translateToEnglish(search);
-        } catch (err) {
-          this.logger.warn(
-            `Search translation failed, using original: ${search}`,
-          );
-        }
-      }
-
-      Object.entries(filteredQuery).forEach(([key, value]) => {
-        if (value) params.append(key, String(value));
-      });
-
-      if (searchTerm) {
-        params.append('search', searchTerm);
-      }
-
-      const fetchProducts = async (perPage: number, page: number) => {
-        const response = await this.httpService.get(
-          `/products?${params.toString()}&per_page=${perPage}&page=${page}`,
+    let searchTerm = search;
+    if (search && language && language !== 'en') {
+      try {
+        searchTerm = await this.translationService.translateToEnglish(search);
+      } catch (err) {
+        this.logger.warn(
+          `Search translation failed, using original: ${search}`,
         );
-        return response;
-      };
+      }
+    }
 
-      const perPage = parseInt(query.per_page ?? '10');
-      const currentPage = parseInt(query.page ?? '1');
+    Object.entries(filteredQuery).forEach(([key, value]) => {
+      if (value) params.append(key, String(value));
+    });
 
-      let response = await fetchProducts(perPage, currentPage);
-      let originalProducts = response.data;
+    if (searchTerm) {
+      params.append('search', searchTerm);
+    }
 
-      let filteredProducts = originalProducts.filter((product: any) => {
+    const fetchProducts = async (perPage: number, page: number) => {
+      const response = await this.httpService.get(
+        `/products?${params.toString()}&per_page=${perPage}&page=${page}`,
+      );
+      return response;
+    };
+
+    const perPage = parseInt(query.per_page ?? '10');
+    const currentPage = parseInt(query.page ?? '1');
+
+    let response = await fetchProducts(perPage, currentPage);
+    let originalProducts = response.data;
+
+    let filteredProducts = originalProducts.filter((product: any) => {
+      const rawPrice = parseFloat(product.prices?.price ?? '0');
+      const hasImages =
+        Array.isArray(product.images) && product.images.length > 0;
+      if (rawPrice <= 0 || !hasImages) return false;
+
+      const withinMin = min_price ? rawPrice >= parseFloat(min_price) : true;
+      const withinMax = max_price ? rawPrice <= parseFloat(max_price) : true;
+      return withinMin && withinMax;
+    });
+
+    let badCount = perPage - filteredProducts.length;
+    let nextPage = currentPage + 1;
+
+    while (
+      badCount > 0 &&
+      nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')
+    ) {
+      const extraResponse = await fetchProducts(badCount + 30, nextPage);
+
+      const extraProducts = extraResponse.data.filter((product: any) => {
         const rawPrice = parseFloat(product.prices?.price ?? '0');
         const hasImages =
           Array.isArray(product.images) && product.images.length > 0;
         if (rawPrice <= 0 || !hasImages) return false;
 
-        const withinMin = min_price ? rawPrice >= parseFloat(min_price) : true;
-        const withinMax = max_price ? rawPrice <= parseFloat(max_price) : true;
+        const withinMin = min_price
+          ? rawPrice >= parseFloat(min_price)
+          : true;
+        const withinMax = max_price
+          ? rawPrice <= parseFloat(max_price)
+          : true;
         return withinMin && withinMax;
       });
 
-      let badCount = perPage - filteredProducts.length;
-      let nextPage = currentPage + 1;
+      this.logger.debug(`Fetched page ${nextPage}, got ${extraProducts.length} valid products`);
+      
+      filteredProducts = [...filteredProducts, ...extraProducts];
+      badCount = perPage - filteredProducts.length;
+      nextPage++;
+    }
 
-      while (badCount > 0 && nextPage <= parseInt(response.headers['x-wp-totalpages'] ?? '1')) {
-        const extraResponse = await fetchProducts(badCount, nextPage);
-        const extraProducts = extraResponse.data.filter((product: any) => {
-          const rawPrice = parseFloat(product.prices?.price ?? '0');
-          const hasImages =
-            Array.isArray(product.images) && product.images.length > 0;
-          if (rawPrice <= 0 || !hasImages) return false;
+    let modifiedProducts = filteredProducts
+      .slice(0, perPage)
+      .map((product) => this.transformProductPrices(product));
 
-          const withinMin = min_price
-            ? rawPrice >= parseFloat(min_price)
-            : true;
-          const withinMax = max_price
-            ? rawPrice <= parseFloat(max_price)
-            : true;
-          return withinMin && withinMax;
-        });
-        console.log(`Fetched page ${nextPage}, got ${extraProducts.length} valid products`);
-        filteredProducts = [...filteredProducts, ...extraProducts];
-        badCount = perPage - filteredProducts.length;
-        nextPage++;
-      } // ✅ إضافة القوس المفقود هنا
+    const productIds = modifiedProducts.map((p) => String(p.id));
+    const viewCounts = await this.getProductsViewCounts(productIds);
 
-      let modifiedProducts = filteredProducts.map((product) =>
-        this.transformProductPrices(product),
-      );
+    modifiedProducts = modifiedProducts.map((product) => ({
+      ...product,
+      viewCount: viewCounts.get(String(product.id)) || 0,
+      reviewsCount: product.rating_count || 0,
+      averageRating: parseFloat(product.average_rating || '0'),
+    }));
 
-      // ✅ إضافة الترجمة
-      if (language && language !== 'en') {
-        modifiedProducts = await Promise.all(
-          modifiedProducts.map((product) =>
-            this.translationService.translateProduct(product, language),
-          ),
-        );
-      }
-
-      return {
-        products: modifiedProducts,
-        pagination: {
-          total: parseInt(response.headers['x-wp-total']) || 0,
-          totalPages: parseInt(response.headers['x-wp-totalpages']) || 1,
-          currentPage: parseInt(query.page ?? '1'),
-          perPage: parseInt(query.per_page ?? '10'),
-        },
-        language: language || 'en',
-      };
-    } catch (error) {
-      this.logger.error(`Error fetching products: ${error?.message}`);
-      throw new HttpException(
-        {
-          error: 'Failed to fetch products',
-          details: error.response?.data || error.message,
-        },
-        HttpStatus.INTERNAL_SERVER_ERROR,
+    if (language && language !== 'en') {
+      modifiedProducts = await Promise.all(
+        modifiedProducts.map((product) =>
+          this.translationService.translateProduct(product, language),
+        ),
       );
     }
+
+    return {
+      products: modifiedProducts,
+      pagination: {
+        total: parseInt(response.headers['x-wp-total']) || 0,
+        totalPages: parseInt(response.headers['x-wp-totalpages']) || 1,
+        currentPage: parseInt(query.page ?? '1'),
+        perPage: parseInt(query.per_page ?? '10'),
+      },
+      language: language || 'en',
+    };
+  } catch (error) {
+    this.logger.error(`Error fetching products: ${error?.message}`);
+    throw new HttpException(
+      {
+        error: 'Failed to fetch products',
+        details: error.response?.data || error.message,
+      },
+      HttpStatus.INTERNAL_SERVER_ERROR,
+    );
   }
+}
+
+
 
   async getProductAttributes(id: string) {
     try {
@@ -594,3 +650,4 @@ export class ProductsService implements OnModuleInit, OnModuleDestroy {
     }
   }
 }
+
