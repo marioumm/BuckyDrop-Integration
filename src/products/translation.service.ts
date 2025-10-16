@@ -113,4 +113,50 @@ export class TranslationService {
 
     return translatedProduct;
   }
+
+  // في translation.service.ts
+async translateToEnglish(text: string): Promise<string> {
+  if (!text || text.trim() === '') return text;
+
+  const cleanText = text.trim();
+  const cacheKey = `to-en:${cleanText}`;
+  const cached = this.translationCache.get(cacheKey);
+  if (cached) return cached;
+
+  try {
+    const apiKey = process.env.GOOGLE_TRANSLATE_API_KEY;
+    if (!apiKey) {
+      this.logger.error('❌ GOOGLE_TRANSLATE_API_KEY is not set');
+      return text;
+    }
+
+
+    const response = await axios.post(
+      'https://translation.googleapis.com/language/translate/v2',
+      {
+        q: cleanText,
+        target: 'en', 
+        format: 'text'
+      },
+      {
+        params: { key: apiKey },
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+        },
+        timeout: 5000
+      }
+    );
+
+    const translatedText = response.data.data.translations[0].translatedText;
+    this.translationCache.set(cacheKey, translatedText);
+
+    return translatedText;
+
+  } catch (error) {
+    this.logger.error(`❌ Translation to English failed: ${error.message}`);
+    return text;
+  }
+}
+
 }
